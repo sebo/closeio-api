@@ -11,80 +11,198 @@ args = parser.parse_args()
 """
 Detect duplicate leads and merge them.
 
-Duplicate criteria:
-- Case insensitive exact match by Company Name
-
-Priority (how to choose 'Destination lead'):
-- Prefers leads with Opportunities over ones without.
-- If both or neither have opportunities, prefer leads with desired_status specified below.
 """
+
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+def green(str):
+    print bcolors.OKBLUE + str + bcolors.ENDC
+
+   
+
+def strCleanup(str):
+    return str.strip().lower().replace("+","").replace("/","")
 
 desired_status = 'open' # capitalization doesn't matter
 
 api = CloseIO_API(args.api_key, development=args.development)
-has_more = True
-offset = 0
-last_lead = None
-total_merged = 0
 
+offset = 0
+has_more = True
+combinedLeads = {}  
+
+typesToCheck = ["phones","emails"]
+combined = {}
+combined["emails"] = {} 
+combined["phones"] = {}
+combined["addresses"] = {}
+combined["name"] = {}
+
+statusLabelOrder = {"First Contact":0,"Follow Up":1,"Heisse Leads":2,"Termin vereinbart":3,"Dead List":4,"Kunde":5}
+"""
+get all leads from close io and match them by phone, email and name
+"""
+num = 0
+totalResults = 0
+offset = 0
+print "loading..."
 while has_more:
     leads_merged_this_page = 0
-
-    # Get a page of leads
     resp = api.get('lead', data={
         'query': 'sort:display_name',
         '_skip': offset,
-        '_fields': 'id,display_name,name,status_label,opportunities,custom'
+        '_fields': 'id,display_name,name,status_label,contacts,opportunities,email_addresses,addresses,phone_numbers,custom'
     })
-    leads = resp['data']
-
+    leads = resp["data"]
+    if "total_results" in resp:
+        print str(int(100.0*offset/resp['total_results']))+"%"
     for lead in leads:
+        leadId = lead['id']
+        num = num +1
+        combinedLeads[leadId] = lead
+        checkType = "name"
+        if lead[checkType]:
+            item = strCleanup(lead[checkType])
+            if item not in combined[checkType]:
+                combined[checkType][item] = []
+            if leadId not in combined[checkType][item]:
+                combined[checkType][item].append(leadId)
+        checkType = "addresses"
+        if lead["addresses"]:
+            for address in lead["addresses"]:
+                items = []
+                if ("zipcode" in address) and (address["zipcode"] != "") and ("address_1" in address) and (address["address_1"] != ""):
+                    items.append(strCleanup(address["zipcode"])+"."+strCleanup(address["address_1"]))
+                if "city" in address and address["city"]!="" and "address_1" in address and address["address_1"] != "":
+                    items.append(strCleanup(address["city"])+"."+strCleanup(address["address_1"]))
+                for item in items:
+                    if item not in combined[checkType]:
+                        combined[checkType][item] = []
+                    if leadId not in combined[checkType][item]:
+                        combined[checkType][item].append(leadId)
+        if lead["contacts"]:
+            for contact in lead["contacts"]:
+                for checkType in typesToCheck:
+                    if contact[checkType]:
+                        for item in contact[checkType]:
+                            item = strCleanup(item[checkType[:-1]])
+                            if item not in combined[checkType]:
+                                combined[checkType][item] = []
+                            if leadId not in combined[checkType][item]:
+                                combined[checkType][item].append(leadId)
 
-        if last_lead and lead['id'] == last_lead['id']:
-            continue # same lead, skip
-
-        # Determine whether "lead" should be considered a duplicate of the previous lead ("last_lead")
-        is_duplicate = last_lead and lead['name'].strip() and last_lead['name'].strip().lower() == lead['name'].strip().lower()
-
-        if is_duplicate:
-
-            # Should we use 'lead' or 'last_lead' as the 'destination' (preferred) lead?
-            prefer_last_lead = True
-            if lead['opportunities'] and not last_lead['opportunities']:
-                prefer_last_lead = False
-            elif lead['status_label'].lower() == desired_status.lower() and last_lead['status_label'].lower() != desired_status.lower():
-                prefer_last_lead = False
-
-            if prefer_last_lead:
-                destination_lead = last_lead
-                source_lead = lead
-            else:
-                destination_lead = lead
-                source_lead = last_lead
-
-            print 'Duplicate (preferring 1st one: %s)' % prefer_last_lead
-            print last_lead
-            print lead
-            print ''
-
-            if args.confirmed:
-
-                # Merge the leads using the 'Merge Leads' API endpoint
-                api.post('lead/merge', data={
-                    'source': source_lead['id'],
-                    'destination': destination_lead['id'],
-                })
-                leads_merged_this_page += 1
-                total_merged += 1
-
-                last_lead = destination_lead
-                continue
-
-        last_lead = lead
-
-    # In order to make sure we don't skip any possible duplicates at the per-page boundry, we subtract offset
-    # by one each time so there's an overlap. We also subtract the number of leads merged since those no longer exist.
-    offset += max(0, len(leads) - 1 - leads_merged_this_page)
+    offset += max(0, len(leads))
     has_more = resp['has_more']
 
-print 'Done; %d merges made' % total_merged
+matchesFound = {}
+
+matchesFound["emails"] = 0
+matchesFound["phones"] = 0
+matchesFound["name"] = 0
+matchesFound["addresses"] = 0
+
+matches = []
+for matchType in combined:
+    for index in combined[matchType]:
+        idlist = combined[matchType][index]
+        if len(idlist) > 1:
+            matchesFound[matchType] = matchesFound[matchType]+1
+            matches.append({"Ids":idlist,"Type":matchType})
+print "Emails "+str(matchesFound["emails"])
+print "phones "+str(matchesFound["phones"])
+print "addresses "+str(matchesFound["addresses"])
+print "name "+str(matchesFound["name"])
+
+print ""
+print ""
+print ""
+"""
+find highest ranking match and merge
+"""
+
+def prettyPrint(str,strType, currentType):
+    if strType == currentType:
+        green(str)
+    else:
+        print str
+
+def printLeadRelevantMatchingData(leadId,mtype):
+    lead = combinedLeads[leadId]
+    print "============================"
+    prettyPrint(lead["name"],"name",mtype)
+    print lead["id"]
+    print lead["status_label"]
+    print ""
+    if lead["contacts"]:
+        for contact in lead["contacts"]:
+            if contact["phones"]:
+                for phone in contact["phones"]:
+                    prettyPrint(phone["phone"],"phones",mtype)
+            if contact["emails"]:
+                for email in contact["emails"]:
+                    prettyPrint(email["email"],"emails",mtype)
+    if lead["addresses"]:
+        for address in lead["addresses"]:
+            prettyPrint(address["zipcode"]+ " " + address["city"],"addresses",mtype)
+            prettyPrint(address["address_1"],"addresses",mtype)
+    print "============================"
+alreadyMergedIds = []
+missingStatusLabels = {}
+for match in matches:
+    highestRankingLeadId = None
+    stopMatch = False
+    idlist = match["Ids"]
+    for leadId in idlist:
+        lead = combinedLeads[leadId]
+        if highestRankingLeadId == None:
+            highestRankingLeadId = leadId
+            print leadId
+        else:
+            if lead["status_label"]:
+                if lead["status_label"] not in statusLabelOrder:
+                    missingStatusLabels[lead["id"]] = lead["status_label"]
+                    stopMatch = True
+                    continue
+                else:
+                    if statusLabelOrder[lead["status_label"]]>statusLabelOrder[combinedLeads[highestRankingLeadId]["status_label"]]:
+                        highestRankingLeadId = leadId
+    if stopMatch:
+        continue
+    idlist.remove(highestRankingLeadId)
+    for sourceId in idlist:
+        if sourceId not in alreadyMergedIds:
+            printLeadRelevantMatchingData(sourceId,match["Type"])
+            print "======>>"
+            printLeadRelevantMatchingData(highestRankingLeadId,match["Type"])
+            choice = raw_input("Please type y for merging > ")
+            if choice == 'y' :
+                print "merged"
+                # Merge the leads using the 'Merge Leads' API endpoint
+                api.post('lead/merge', data={
+                    'source': sourceId,
+                    'destination': highestRankingLeadId,
+                })
+            alreadyMergedIds.append(sourceId)
+            print ""
+            print ""
+            print ""
+            print ""
+            print ""
+            print ""
+            print ""
+            print ""
+            print ""
+
+for index in missingStatusLabels:
+    print "please remove/replace the following status labels"
+    print "leadId: "+index
+    print missingStatusLabels[index]
