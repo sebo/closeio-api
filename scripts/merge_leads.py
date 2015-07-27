@@ -47,7 +47,7 @@ combined["phones"] = {}
 combined["addresses"] = {}
 combined["name"] = {}
 
-statusLabelOrder = {"First Contact":0,"Follow Up":1,"Heisse Leads":2,"Termin vereinbart":3,"Dead List":4,"Kunde":5}
+statusLabelOrder = {"First Contact":0,"Follow Up":1,"Heisse Leads":2,"Termin vereinbart":3,"SalesStarPipe":4,"Dead List":5,"Kunde":6}
 """
 get all leads from close io and match them by phone, email and name
 """
